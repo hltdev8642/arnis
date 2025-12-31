@@ -74,6 +74,122 @@ impl<'a> WorldEditor<'a> {
         (ser_buffer, true)
     }
 
+    /// Flushes accumulated regions to disk and clears them from memory.
+    /// This prevents memory buildup during large world generation.
+    pub(super) fn flush_java_regions(&mut self) -> Result<(), String> {
+        use fastanvil::Region;
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        if self.world.regions.is_empty() {
+            return Ok(());
+        }
+
+        let regions_to_flush: Vec<_> = self.world.regions.keys().copied().collect();
+        let flushed_count = AtomicUsize::new(0);
+
+        // Write all current regions in parallel
+        regions_to_flush.par_iter().try_for_each(|(region_x, region_z)| -> Result<(), String> {
+            if let Some(region_to_modify) = self.world.regions.get(&(*region_x, *region_z)) {
+                let mut region = self.create_region(*region_x, *region_z);
+                let mut ser_buffer = Vec::with_capacity(8192);
+
+                for (&(chunk_x, chunk_z), chunk_to_modify) in &region_to_modify.chunks {
+                    if !chunk_to_modify.sections.is_empty() || !chunk_to_modify.other.is_empty() {
+                        // Read existing chunk data if it exists
+                        let existing_data = region
+                            .read_chunk(chunk_x as usize, chunk_z as usize)
+                            .map_err(|e| format!("Failed to read chunk: {}", e))?
+                            .unwrap_or_default();
+
+                        // Parse existing chunk or create new one
+                        let mut chunk: Chunk = if !existing_data.is_empty() {
+                            fastnbt::from_bytes(&existing_data)
+                                .map_err(|e| format!("Failed to parse chunk: {}", e))?
+                        } else {
+                            Chunk {
+                                sections: Vec::new(),
+                                x_pos: chunk_x + (region_x * 32),
+                                z_pos: chunk_z + (region_z * 32),
+                                is_light_on: 0,
+                                other: FnvHashMap::default(),
+                            }
+                        };
+
+                        // Update sections
+                        let new_sections: Vec<Section> = chunk_to_modify.sections().collect();
+                        for new_section in new_sections {
+                            if let Some(existing_section) =
+                                chunk.sections.iter_mut().find(|s| s.y == new_section.y)
+                            {
+                                existing_section.block_states.palette =
+                                    new_section.block_states.palette;
+                                existing_section.block_states.data = new_section.block_states.data;
+                            } else {
+                                chunk.sections.push(new_section);
+                            }
+                        }
+
+                        // Handle block entities
+                        if let Some(existing_entities) = chunk.other.get_mut("block_entities") {
+                            if let Some(new_entities) = chunk_to_modify.other.get("block_entities")
+                            {
+                                if let (Value::List(existing), Value::List(new)) =
+                                    (existing_entities, new_entities)
+                                {
+                                    existing.retain(|e| {
+                                        if let Value::Compound(map) = e {
+                                            let (x, y, z) = get_entity_coords(map);
+                                            !new.iter().any(|new_e| {
+                                                if let Value::Compound(new_map) = new_e {
+                                                    let (nx, ny, nz) = get_entity_coords(new_map);
+                                                    x == nx && y == ny && z == nz
+                                                } else {
+                                                    false
+                                                }
+                                            })
+                                        } else {
+                                            true
+                                        }
+                                    });
+                                    existing.extend(new.clone());
+                                }
+                            }
+                        } else if let Some(new_entities) = chunk_to_modify.other.get("block_entities") {
+                            chunk.other.insert("block_entities".to_string(), new_entities.clone());
+                        }
+
+                        // Merge other chunk data
+                        for (key, value) in &chunk_to_modify.other {
+                            if key != "block_entities" {
+                                chunk.other.insert(key.clone(), value.clone());
+                            }
+                        }
+
+                        // Write chunk
+                        ser_buffer.clear();
+                        fastnbt::to_writer(&mut ser_buffer, &chunk)
+                            .map_err(|e| format!("Failed to serialize chunk: {}", e))?;
+
+                        region
+                            .write_chunk(chunk_x as usize, chunk_z as usize, &ser_buffer)
+                            .map_err(|e| format!("Failed to write chunk: {}", e))?;
+                    }
+                }
+
+                flushed_count.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(())
+        })?;
+
+        // Clear flushed regions from memory
+        for key in regions_to_flush {
+            self.world.regions.remove(&key);
+        }
+
+        Ok(())
+    }
+
     /// Saves the world in Java Edition Anvil format.
     pub(super) fn save_java(&mut self) {
         println!("{} Saving world...", "[7/7]".bold());

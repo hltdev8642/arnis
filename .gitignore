@@ -52,3 +52,4 @@ gen/
 !/flake/flake.lock
 
 output/
+ref/

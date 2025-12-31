@@ -95,6 +95,8 @@ pub fn generate_world_with_options(
         options.spawn_point,
     );
 
+    editor.set_blocks_per_meter(args.scale);
+
     println!("{} Processing data...", "[4/7]".bold());
 
     // Build highway connectivity map once before processing
@@ -223,87 +225,103 @@ pub fn generate_world_with_options(
 
     process_pb.finish();
 
-    // Generate ground layer
+    // Generate ground layer with periodic flushing to disk
     let total_blocks: u64 = xzbbox.bounding_rect().total_blocks();
     let desired_updates: u64 = 1500;
     let batch_size: u64 = (total_blocks / desired_updates).max(1);
+    
+    // Flush to disk every N blocks to prevent memory accumulation
+    let flush_interval: u64 = 50000; // Flush every 50k blocks
 
     let mut block_counter: u64 = 0;
 
     println!("{} Generating ground...", "[6/7]".bold());
     emit_gui_progress_update(70.0, "Generating ground...");
 
-    let ground_pb: ProgressBar = ProgressBar::new(total_blocks);
-    ground_pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:45}] {pos}/{len} blocks ({eta})")
-            .unwrap()
-            .progress_chars("█▓░"),
-    );
+    // Skip ground generation for Teardown to prevent OOM
+    let skip_ground = editor.format() == crate::world_editor::WorldFormat::TeardownMod;
+    
+    if skip_ground {
+        println!("  Skipping ground generation for Teardown format (prevents OOM)");
+        emit_gui_progress_update(90.0, "Ground generation skipped");
+    } else {
+        let ground_pb: ProgressBar = ProgressBar::new(total_blocks);
+        ground_pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:45}] {pos}/{len} blocks ({eta}) {msg}")
+                .unwrap()
+                .progress_chars("█▓░"),
+        );
 
-    let mut gui_progress_grnd: f64 = 70.0;
-    let mut last_emitted_progress: f64 = gui_progress_grnd;
-    let total_iterations_grnd: f64 = total_blocks as f64;
-    let progress_increment_grnd: f64 = 20.0 / total_iterations_grnd;
+        let mut gui_progress_grnd: f64 = 70.0;
+        let mut last_emitted_progress: f64 = gui_progress_grnd;
+        let total_iterations_grnd: f64 = total_blocks as f64;
+        let progress_increment_grnd: f64 = 20.0 / total_iterations_grnd;
 
-    let groundlayer_block = GRASS_BLOCK;
+        let groundlayer_block = GRASS_BLOCK;
+        let mut flushes = 0usize;
 
-    for x in xzbbox.min_x()..=xzbbox.max_x() {
-        for z in xzbbox.min_z()..=xzbbox.max_z() {
-            // Add default dirt and grass layer if there isn't a stone layer already
-            if !editor.check_for_block(x, 0, z, Some(&[STONE])) {
-                editor.set_block(groundlayer_block, x, 0, z, None, None);
-                editor.set_block(DIRT, x, -1, z, None, None);
-                editor.set_block(DIRT, x, -2, z, None, None);
-            }
+        for x in xzbbox.min_x()..=xzbbox.max_x() {
+            for z in xzbbox.min_z()..=xzbbox.max_z() {
+                // Add default dirt and grass layer if there isn't a stone layer already
+                if !editor.check_for_block(x, 0, z, Some(&[STONE])) {
+                    editor.set_block(groundlayer_block, x, 0, z, None, None);
+                    editor.set_block(DIRT, x, -1, z, None, None);
+                    editor.set_block(DIRT, x, -2, z, None, None);
+                }
 
-            // Fill underground with stone
-            if args.fillground {
-                // Fill from bedrock+1 to 3 blocks below ground with stone
-                editor.fill_blocks_absolute(
-                    STONE,
-                    x,
-                    MIN_Y + 1,
-                    z,
-                    x,
-                    editor.get_absolute_y(x, -3, z),
-                    z,
-                    None,
-                    None,
-                );
-            }
-            // Generate a bedrock level at MIN_Y
-            editor.set_block_absolute(BEDROCK, x, MIN_Y, z, None, Some(&[BEDROCK]));
+                // Fill underground with stone
+                if args.fillground {
+                    // Fill from bedrock+1 to 3 blocks below ground with stone
+                    editor.fill_blocks_absolute(
+                        STONE,
+                        x,
+                        MIN_Y + 1,
+                        z,
+                        x,
+                        editor.get_absolute_y(x, -3, z),
+                        z,
+                        None,
+                        None,
+                    );
+                }
+                // Generate a bedrock level at MIN_Y
+                editor.set_block_absolute(BEDROCK, x, MIN_Y, z, None, Some(&[BEDROCK]));
 
-            block_counter += 1;
-            // Use manual % check since is_multiple_of() is unstable on stable Rust
-            #[allow(clippy::manual_is_multiple_of)]
-            if block_counter % batch_size == 0 {
-                ground_pb.inc(batch_size);
-            }
+                block_counter += 1;
+                
+                // Periodic flush to disk to prevent memory accumulation
+                if block_counter % flush_interval == 0 {
+                    flushes += 1;
+                    ground_pb.set_message(format!("(flush #{} @ {}k blocks)", flushes, block_counter / 1000));
+                    if let Err(e) = editor.flush_to_disk() {
+                        eprintln!("Warning: Failed to flush ground data: {}", e);
+                    }
+                }
+                
+                // Use manual % check since is_multiple_of() is unstable on stable Rust
+                #[allow(clippy::manual_is_multiple_of)]
+                if block_counter % batch_size == 0 {
+                    ground_pb.inc(batch_size);
+                }
 
-            gui_progress_grnd += progress_increment_grnd;
-            if (gui_progress_grnd - last_emitted_progress).abs() > 0.25 {
-                emit_gui_progress_update(gui_progress_grnd, "");
-                last_emitted_progress = gui_progress_grnd;
+                gui_progress_grnd += progress_increment_grnd;
+                if (gui_progress_grnd - last_emitted_progress).abs() > 0.25 {
+                    emit_gui_progress_update(gui_progress_grnd, "");
+                    last_emitted_progress = gui_progress_grnd;
+                }
             }
         }
+        
+        // Final flush
+        ground_pb.set_message("(final flush)");
+        if let Err(e) = editor.flush_to_disk() {
+            eprintln!("Warning: Failed to final flush ground data: {}", e);
+        }
+
+        ground_pb.inc(block_counter % batch_size);
+        ground_pb.finish();
     }
-
-    // Set sign for player orientation
-    /*editor.set_sign(
-        "↑".to_string(),
-        "Generated World".to_string(),
-        "This direction".to_string(),
-        "".to_string(),
-        9,
-        -61,
-        9,
-        6,
-    );*/
-
-    ground_pb.inc(block_counter % batch_size);
-    ground_pb.finish();
 
     // Save world
     editor.save();

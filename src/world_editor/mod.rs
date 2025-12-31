@@ -77,6 +77,10 @@ pub struct WorldEditor<'a> {
     llbbox: LLBBox,
     ground: Option<Box<Ground>>,
     format: WorldFormat,
+    /// World scale used for generation, in blocks per meter.
+    ///
+    /// Default is 1.0 (1 block == 1 meter).
+    blocks_per_meter: f64,
     /// Optional level name for Bedrock worlds (e.g., "Arnis World: New York City")
     bedrock_level_name: Option<String>,
     /// Optional spawn point for Bedrock worlds (x, z coordinates)
@@ -96,6 +100,7 @@ impl<'a> WorldEditor<'a> {
             llbbox,
             ground: None,
             format: WorldFormat::JavaAnvil,
+                blocks_per_meter: 1.0,
             bedrock_level_name: None,
             bedrock_spawn_point: None,
         }
@@ -120,10 +125,21 @@ impl<'a> WorldEditor<'a> {
             llbbox,
             ground: None,
             format,
+                blocks_per_meter: 1.0,
             bedrock_level_name,
             bedrock_spawn_point,
         }
     }
+
+        pub fn set_blocks_per_meter(&mut self, blocks_per_meter: f64) {
+            if blocks_per_meter.is_finite() && blocks_per_meter > 0.0 {
+                self.blocks_per_meter = blocks_per_meter;
+            }
+        }
+
+        pub fn blocks_per_meter(&self) -> f64 {
+            self.blocks_per_meter
+        }
 
     /// Sets the ground reference for elevation-based block placement
     pub fn set_ground(&mut self, ground: &Ground) {
@@ -505,6 +521,17 @@ impl<'a> WorldEditor<'a> {
             WorldFormat::JavaAnvil => self.save_java(),
             WorldFormat::BedrockMcWorld => self.save_bedrock(),
             WorldFormat::TeardownMod => self.save_teardown(),
+        }
+    }
+    
+    /// Flushes accumulated world data to disk and clears memory.
+    /// Applicable for Java Edition and Teardown formats during world generation.
+    /// For Bedrock, this is a no-op.
+    pub fn flush_to_disk(&mut self) -> Result<(), String> {
+        match self.format {
+            WorldFormat::JavaAnvil => self.flush_java_regions(),
+            WorldFormat::BedrockMcWorld => Ok(()), // Bedrock doesn't support incremental flush
+            WorldFormat::TeardownMod => self.flush_teardown_regions(),
         }
     }
 
