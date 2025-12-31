@@ -11,6 +11,8 @@
 
 mod common;
 mod java;
+mod teardown;
+mod vox;
 
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
@@ -45,6 +47,8 @@ pub enum WorldFormat {
     JavaAnvil,
     /// Bedrock Edition .mcworld format
     BedrockMcWorld,
+    /// Teardown content mod folder (info.txt + main.xml + vox/*.vox)
+    TeardownMod,
 }
 
 /// Metadata saved with the world
@@ -493,12 +497,14 @@ impl<'a> WorldEditor<'a> {
             match self.format {
                 WorldFormat::JavaAnvil => "Java Edition (Anvil)",
                 WorldFormat::BedrockMcWorld => "Bedrock Edition (.mcworld)",
+                WorldFormat::TeardownMod => "Teardown (content mod)",
             }
         );
 
         match self.format {
             WorldFormat::JavaAnvil => self.save_java(),
             WorldFormat::BedrockMcWorld => self.save_bedrock(),
+            WorldFormat::TeardownMod => self.save_teardown(),
         }
     }
 

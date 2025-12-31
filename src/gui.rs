@@ -874,6 +874,8 @@ fn gui_start_generation(
             // Determine world format from UI selection
             let world_format = if world_format == "bedrock" {
                 WorldFormat::BedrockMcWorld
+            } else if world_format == "teardown" {
+                WorldFormat::TeardownMod
             } else {
                 WorldFormat::JavaAnvil
             };
@@ -898,6 +900,10 @@ fn gui_start_generation(
                         .unwrap_or_else(|_| PathBuf::from("."))
                         .join(filename);
                     (output_path, Some(lvl_name))
+                }
+                WorldFormat::TeardownMod => {
+                    // Teardown: use the selected output path as the mod folder
+                    (world_path.clone(), None)
                 }
             };
 
@@ -937,6 +943,11 @@ fn gui_start_generation(
                     generation_path
                 } else {
                     world_path
+                },
+                format: match world_format {
+                    WorldFormat::JavaAnvil => crate::args::OutputFormat::MinecraftJava,
+                    WorldFormat::BedrockMcWorld => crate::args::OutputFormat::MinecraftBedrock,
+                    WorldFormat::TeardownMod => crate::args::OutputFormat::Teardown,
                 },
                 downloader: "requests".to_string(),
                 scale: world_scale,

@@ -16,6 +16,19 @@ use std::sync::Mutex;
 /// Pre-computed block colors for fast lookup
 static BLOCK_COLORS: Lazy<FnvHashMap<&'static str, Rgb<u8>>> = Lazy::new(get_block_colors);
 
+/// Returns an approximate RGB color for a Minecraft block name.
+///
+/// Input should be either with or without the `minecraft:` prefix.
+/// This is used both for map preview rendering and for non-Minecraft exports (e.g. Teardown voxel export).
+pub(crate) fn block_name_to_rgb(name: &str) -> (u8, u8, u8) {
+    let short_name = name.strip_prefix("minecraft:").unwrap_or(name);
+    let base_color = BLOCK_COLORS
+        .get(short_name)
+        .cloned()
+        .unwrap_or_else(|| get_fallback_color(short_name));
+    (base_color.0[0], base_color.0[1], base_color.0[2])
+}
+
 /// Renders a top-down view of the generated Minecraft world.
 /// Returns the path to the saved image file.
 pub fn render_world_map(

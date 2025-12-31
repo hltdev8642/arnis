@@ -1,4 +1,4 @@
-use crate::args::Args;
+use crate::args::{Args, OutputFormat};
 use crate::block_definitions::{BEDROCK, DIRT, GRASS_BLOCK, STONE};
 use crate::coordinate_system::cartesian::XZBBox;
 use crate::coordinate_system::geographic::LLBBox;
@@ -32,10 +32,16 @@ pub fn generate_world(
     ground: Ground,
     args: &Args,
 ) -> Result<(), String> {
-    // Default to Java format when called from CLI
+    // Default to Teardown format when called from CLI (unless overridden)
+    let format = match args.format {
+        OutputFormat::Teardown => WorldFormat::TeardownMod,
+        OutputFormat::MinecraftJava => WorldFormat::JavaAnvil,
+        OutputFormat::MinecraftBedrock => WorldFormat::BedrockMcWorld,
+    };
+
     let options = GenerationOptions {
         path: args.path.clone(),
-        format: WorldFormat::JavaAnvil,
+        format,
         level_name: None,
         spawn_point: None,
     };
@@ -51,6 +57,33 @@ pub fn generate_world_with_options(
     args: &Args,
     options: GenerationOptions,
 ) -> Result<PathBuf, String> {
+    // Validate output path based on target format.
+    match options.format {
+        WorldFormat::JavaAnvil => {
+            if !options.path.exists() {
+                return Err(format!("Minecraft world path does not exist: {}", options.path.display()));
+            }
+            if !options.path.is_dir() {
+                return Err(format!("Minecraft world path is not a directory: {}", options.path.display()));
+            }
+            let region = options.path.join("region");
+            if !region.is_dir() {
+                return Err(format!("No Minecraft world found at {} (missing region/)", region.display()));
+            }
+        }
+        WorldFormat::BedrockMcWorld => {
+            // Bedrock writer creates the output file/folder itself.
+        }
+        WorldFormat::TeardownMod => {
+            if let Some(parent) = options.path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create output parent dir {}: {e}", parent.display()))?;
+            }
+            std::fs::create_dir_all(&options.path)
+                .map_err(|e| format!("Failed to create Teardown mod dir {}: {e}", options.path.display()))?;
+        }
+    }
+
     let output_path = options.path.clone();
     let world_format = options.format;
     let mut editor: WorldEditor = WorldEditor::new_with_format_and_name(

@@ -1,7 +1,18 @@
 use crate::coordinate_system::geographic::LLBBox;
 use clap::Parser;
+use clap::ValueEnum;
 use std::path::PathBuf;
 use std::time::Duration;
+
+#[derive(ValueEnum, Debug, Clone, Copy, Eq, PartialEq)]
+pub enum OutputFormat {
+    /// Export a Teardown content-mod folder (info.txt + main.xml + vox/*)
+    Teardown,
+    /// Export a Minecraft Java Edition world (Anvil region files)
+    MinecraftJava,
+    /// Export a Minecraft Bedrock Edition world (.mcworld) (requires the `bedrock` feature)
+    MinecraftBedrock,
+}
 
 /// Command-line arguments parser
 #[derive(Parser, Debug)]
@@ -19,9 +30,17 @@ pub struct Args {
     #[arg(long, group = "location")]
     pub save_json_file: Option<String>,
 
-    /// Path to the Minecraft world (required)
-    #[arg(long, value_parser = validate_minecraft_world_path)]
+    /// Output directory.
+    ///
+    /// - `--format teardown`: This is the Teardown mod folder to create/write (will be created if missing)
+    /// - `--format minecraft-java`: This must point to an existing Minecraft world folder containing `region/`
+    /// - `--format minecraft-bedrock`: Output path for the `.mcworld` file
+    #[arg(long)]
     pub path: PathBuf,
+
+    /// Export target format
+    #[arg(long, value_enum, default_value_t = OutputFormat::Teardown)]
+    pub format: OutputFormat,
 
     /// Downloader method (requests/curl/wget) (optional)
     #[arg(long, default_value = "requests")]
@@ -64,21 +83,6 @@ pub struct Args {
     pub spawn_point: Option<(f64, f64)>,
 }
 
-fn validate_minecraft_world_path(path: &str) -> Result<PathBuf, String> {
-    let mc_world_path = PathBuf::from(path);
-    if !mc_world_path.exists() {
-        return Err(format!("Path does not exist: {path}"));
-    }
-    if !mc_world_path.is_dir() {
-        return Err(format!("Path is not a directory: {path}"));
-    }
-    let region = mc_world_path.join("region");
-    if !region.is_dir() {
-        return Err(format!("No Minecraft world found at {region:?}"));
-    }
-    Ok(mc_world_path)
-}
-
 fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntError> {
     let seconds = arg.parse()?;
     Ok(std::time::Duration::from_secs(seconds))
@@ -88,28 +92,16 @@ fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntEr
 mod tests {
     use super::*;
 
-    fn minecraft_tmpdir() -> tempfile::TempDir {
-        let tmpdir = tempfile::tempdir().unwrap();
-        // create a `region` directory in the tempdir
-        let region_path = tmpdir.path().join("region");
-        std::fs::create_dir(&region_path).unwrap();
-        tmpdir
+    fn tmpdir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
     #[test]
     fn test_flags() {
-        let tmpdir = minecraft_tmpdir();
+        let tmpdir = tmpdir();
         let tmp_path = tmpdir.path().to_str().unwrap();
 
         // Test that terrain/debug are SetTrue
-        let cmd = [
-            "arnis",
-            "--path",
-            tmp_path,
-            "--bbox",
-            "1,2,3,4",
-            "--terrain",
-            "--debug",
-        ];
+        let cmd = ["arnis", "--path", tmp_path, "--bbox", "1,2,3,4", "--terrain", "--debug"];
         let args = Args::parse_from(cmd.iter());
         assert!(args.debug);
         assert!(args.terrain);
@@ -122,7 +114,7 @@ mod tests {
 
     #[test]
     fn test_required_options() {
-        let tmpdir = minecraft_tmpdir();
+        let tmpdir = tmpdir();
         let tmp_path = tmpdir.path().to_str().unwrap();
 
         let cmd = ["arnis"];
@@ -137,5 +129,24 @@ mod tests {
         // The --gui flag isn't used here, ugh. TODO clean up main.rs and its argparse usage.
         // let cmd = ["arnis", "--gui"];
         // assert!(Args::try_parse_from(cmd.iter()).is_ok());
+    }
+
+    #[test]
+    fn test_format_parses() {
+        let tmpdir = tmpdir();
+        let tmp_path = tmpdir.path().to_str().unwrap();
+
+        let cmd = [
+            "arnis",
+            "--path",
+            tmp_path,
+            "--bbox",
+            "1,2,3,4",
+            "--format",
+            "minecraft-java",
+        ];
+
+        let args = Args::parse_from(cmd.iter());
+        assert_eq!(args.format, OutputFormat::MinecraftJava);
     }
 }
